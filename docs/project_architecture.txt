@@ -1,0 +1,450 @@
+SmartShooter React Frontend — Architecture & Scope v1.0
+
+Last updated: 2025‑08‑22
+Owner: You (Product/Tech)
+Prepared by: Software Architect
+
+1) Product vision & goals
+
+Vision: The fastest, cleanest way for hoopers to log shots, visualize hot zones, and improve accuracy over time—solo or with a coach.
+
+Primary goals (MVP):
+
+30‑second session logging flow (date → type → rounds → save)
+
+Clear progress dashboards (accuracy, volume, best zones)
+
+Intuitive court heatmap per session and over time
+
+Seamless edit/delete with strict validation (made ≤ attempted)
+
+Secure per‑user data with Firebase Auth & Firestore rules
+
+Success metrics: time-to-first-log < 2 min, 3+ sessions/week/user, 20%+ improvement in targeted zone accuracy within 4 weeks (measured by app).
+
+2) Personas & roles
+
+Athlete (default): logs sessions, reviews stats, exports summaries
+
+Coach (vNext): views multiple athletes, leaves notes
+
+Admin (internal): support/debug tools, feature flags
+
+MVP ships with Athlete only (single-user scope). Coach/Admin are vNext.
+
+3) Scope (MVP) — features & user stories
+
+3.1 Authentication & onboarding
+
+As an athlete, I can sign up/sign in (email/password + anonymous option) so that my data syncs across devices.
+
+As an athlete, I complete a 60‑second onboarding (dominant hand, goals, initial accuracy baseline optional).
+
+3.2 Session logging (core)
+
+Training types: Spot, Catch & Shoot, Off Dribble, Run Half‑Court (configurable)
+
+Zone groups: 3pt and Midrange (extendable)
+
+Rounds: 1..N per session. Each round contains multiple zones with attempted and made.
+
+Realtime validation: made ≤ attempted plus non‑negative integers; auto accuracy (%) per zone/round/session.
+
+Notes (optional). Default date = today; editable.
+
+3.3 Sessions list (log)
+
+Paginated, sortable table (date, type, zone group, rounds, accuracy, volume, notes)
+
+Filters: by date range, type, zone group, accuracy threshold
+
+Actions: View, Edit (modal), Delete (confirm)
+
+3.4 Edit session modal
+
+Prepopulated from Firestore
+
+Edit rounds & zones inline; maintain validation; recompute aggregates
+
+Preserve session history updatedAt; write audit trail (vNext)
+
+3.5 Analytics Dashboard
+
+KPIs: Last 7/30 days Accuracy, Attempts, Makes, Best Zone
+
+Charts: Accuracy trend (line), Attempts per type (bar), Zone hit map (heatmap overlay)
+
+Quick filters: 7d / 30d / custom; by type; by zone group
+
+3.6 Zone visualizations
+
+Court overlay using react-konva: per session heatmap & cumulative heatmap
+
+Tooltip per zone: attempts/makes/accuracy; per‑round toggle
+
+3.7 Export & share
+
+Export CSV (sessions or single session)
+
+Share image of court heatmap + KPIs (client‑side export)
+
+3.8 Settings
+
+Profile (name, preferred hand), Units (imperial/metric – future), Language (EN, DE, UA in vNext)
+
+Out of scope (vNext): Coach view & teams, leaderboards, PWA offline mode, social share feed, AI insights, wearable integrations.
+
+4) Non‑functional requirements
+
+Performance: LCP < 2.5s on mid‑range devices; session save < 300ms perceived
+
+Security & privacy: Principle of least privilege; per‑user data isolation via Firestore rules
+
+Reliability: Graceful retries, optimistic UI with rollback on failure
+
+Accessibility: WCAG 2.1 AA targets; keyboard access for all inputs/modals
+
+Internationalization: i18n scaffolding from day one (copy in EN; DE/UA later)
+
+Responsiveness: Mobile‑first (iPhone SE/Android small) → Tablet → Desktop
+
+5) Tech stack & key libraries
+
+Runtime & Build: React 18 + Vite + TypeScript
+
+UI: Tailwind CSS + shadcn/ui + lucide-react icons
+
+State:
+
+Server state: TanStack Query (cache, retries, pagination)
+
+UI state: Zustand (modal visibility, filters)
+
+Forms & Validation: React Hook Form + Zod
+
+Data: Firebase Auth, Firestore, Firebase Hosting (alt: Vercel)
+
+Charts: react-chartjs-2 (Chart.js)
+
+Canvas: react-konva for court overlays
+
+Dates: Day.js
+
+Testing: Vitest + React Testing Library + Playwright (e2e)
+
+Quality: ESLint, Prettier, Husky + lint-staged
+
+CI/CD: GitHub Actions → Firebase Hosting (or Vercel)
+
+Analytics/Telemetry: PostHog or GA4 + Sentry (errors)
+
+6) High-level architecture
+
+App (routing, providers)
+├─ AuthGate (protect routes)
+├─ Layout (Header, Nav, Toaster)
+│  ├─ DashboardPage
+│  ├─ SessionsPage
+│  │   ├─ SessionsTable
+│  │   ├─ FiltersBar
+│  │   └─ EditSessionModal
+│  ├─ LogSessionPage
+│  │   ├─ SessionForm (type, date, zone group)
+│  │   ├─ RoundsEditor (dynamic)
+│  │   └─ SummarySidebar (live totals)
+│  └─ SettingsPage
+└─ Shared: Charts, CourtHeatmap, ExportButton, ConfirmDialog
+
+Client/Server boundaries
+
+All persistence via a thin Data Access Layer (/src/lib/api) wrapping Firestore (CRUD + schemas)
+
+Derived metrics computed client‑side; heavy aggregates (vNext) in Cloud Functions
+
+7) Data model (Firestore)
+
+Collections
+
+/users/{userId}: profile
+
+/sessions/{sessionId}: denormalized session documents (with userId for composite index)
+
+/stats_daily/{userId_date} (vNext): daily aggregates per user
+
+Session document (MVP)
+
+{
+  "id": "auto",
+  "userId": "uid",
+  "date": "2025-08-21",
+  "trainingType": "catch_and_shoot",
+  "zoneGroup": "3pt", // or "midrange"
+  "rounds": [
+    { "name": "Left Corner", "attempted": 10, "made": 7 },
+    { "name": "Left Wing 3pt", "attempted": 10, "made": 6 }
+  ],
+  "totals": { "attempted": 100, "made": 62, "accuracy": 62 },
+  "notes": "Felt strong on right wing",
+  "createdAt": 1234567890,
+  "updatedAt": 1234567999
+}
+
+Indexes
+
+sessions: userId + date DESC
+
+sessions: userId + trainingType + date DESC
+
+Validation (client + rules): ensure 0 ≤ made ≤ attempted ≤ 1000 per zone.
+
+8) Security (Firestore Rules — MVP)
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /sessions/{sid} {
+      allow create: if isSignedIn() &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.totals.accuracy >= 0 &&
+        request.resource.data.totals.accuracy <= 100;
+
+      allow read, update, delete: if isSignedIn() &&
+        resource.data.userId == request.auth.uid;
+    }
+  }
+}
+
+9) API layer (client) — shape
+
+auth.ts: signInAnon, signUpEmail, signInEmail, signOut, onAuthStateChanged
+
+sessions.ts:
+
+listSessions({ userId, limit, cursor, filters })
+
+getSession(id)
+
+createSession(payload)
+
+updateSession(id, patch)
+
+deleteSession(id)
+
+Helpers: computeTotals(rounds), validateRounds(rounds)
+
+All calls wrapped with TanStack Query; mutations are optimistic with rollback.
+
+10) UI/UX details (key screens)
+
+Log Session
+
+Stepper: Basics → Rounds → Review (or single‑page with anchored sections on desktop)
+
+RoundsEditor: dynamic grid of zones for selected group; quick +/– buttons; total live update; keyboard‑first; mobile friendly
+
+Error states in‑line; sticky Save button
+
+Sessions List
+
+Sticky FiltersBar; fast text search; CSV export
+
+Each row shows: date • type • zone group • rounds count • accuracy • notes (truncated) • actions
+
+Dashboard
+
+KPI tiles; trend chart; attempts by type; heatmap (toggle sessions vs cumulative)
+
+Hover tooltips with exact counts; drill‑down to filtered Sessions
+
+Court Heatmap
+
+Canvas overlay on coach‑board half‑court; zone tiles color‑scaled by accuracy; labels toggle
+
+11) Project structure (Vite + TS)
+
+src/
+  app/
+    providers.tsx
+    router.tsx
+  components/
+    charts/
+    court/
+    ui/ (shadcn wrappers)
+  features/
+    auth/
+    sessions/
+      api/
+      components/
+      hooks/
+      pages/
+    dashboard/
+    settings/
+  hooks/
+  lib/
+    firebase.ts
+    queryClient.ts
+  store/ (Zustand)
+  styles/
+  utils/
+  types/
+  index.css
+  main.tsx
+
+12) Testing strategy
+
+Unit: utils (computeTotals, validators)
+
+Component: forms, tables, modals (React Testing Library)
+
+Integration: session create/edit/delete flows
+
+E2E (Playwright): happy path: sign in → log session → see dashboard → edit session
+
+13) CI/CD & environments
+
+Branching: trunk‑based with short‑lived feature branches
+
+CI (GitHub Actions): type check, lint, test, build
+
+CD: auto deploy main → Staging; manual promote to Prod
+
+Config: .env (Vite) for Firebase keys; never commit secrets
+
+14) Analytics & telemetry
+
+Event map: session_created, session_edited, session_deleted, dashboard_viewed, export_csv
+
+Error logging with Sentry (surface Firestore/network errors + validation failures)
+
+15) Delivery plan (6 weeks, solo dev pace; ~3 h/day)
+
+Week 1 — Boot & Auth
+
+Repo init (Vite+TS), Tailwind, shadcn, eslint/prettier, Husky
+
+Firebase setup (Auth, Firestore, Hosting), rules v1
+
+AuthGate + basic routing; anonymous sign‑in
+
+Week 2 — Data layer & Log Session
+
+Sessions schema, DAL (createSession, listSessions)
+
+SessionForm + RoundsEditor + validation (Zod)
+
+Compute totals; save; toast notifications
+
+Week 3 — Sessions List & Edit Modal
+
+Table with filters, sorting, pagination
+
+EditSessionModal (optimistic updates), Delete with confirm
+
+CSV export
+
+Week 4 — Dashboard & Charts
+
+KPI tiles; accuracy trend; attempts by type
+
+CourtHeatmap (react‑konva); session vs cumulative
+
+Week 5 — Polish & NFRs
+
+Accessibility pass; responsive finetune; empty states; loading skeletons
+
+Error handling; Sentry; analytics events
+
+Week 6 — Hardening & Release
+
+Tests: unit/integration/e2e; performance tuning
+
+Staging UAT; prod deploy; post‑release monitor
+
+16) Definition of Done (per feature)
+
+UX reviewed on mobile & desktop
+
+Validation enforced (client) and impossible states blocked (rules)
+
+Tests passing; coverage on core logic
+
+Analytics events recorded; no console errors
+
+Docs updated (README + CHANGELOG)
+
+17) Risks & mitigations
+
+Scope creep → Strict MVP; backlog vNext
+
+Perf on low devices → Virtualize long tables; memoize; code-split
+
+Data correctness → Shared validator + unit tests
+
+Auth friction → Allow anonymous; upgrade path to email
+
+Chart/canvas complexity → Start with fewer zones; incremental visuals
+
+Time constraints → Daily timebox; weekly demo cut
+
+Vendor lock-in → Abstract DAL; plan Alt adapters (Supabase vNext)
+
+i18n complexity → EN first; i18n scaffolding only
+
+Analytics noise → Event naming convention + sampling
+
+Backup/Export → CSV export MVP; automated Firestore backup (console)
+
+18) Backlog (vNext)
+
+Coach Mode (multi‑athlete, comments)
+
+Teams & Leaderboards
+
+PWA Offline mode + background sync
+
+AI insights: zone recommendations, drill generator
+
+Session media attach (photo/video)
+
+Wearables integration (ShotTracker, Apple Watch drills)
+
+Social share templates, public profile
+
+19) Acceptance criteria (samples)
+
+Create Session
+
+Given valid inputs, when I click Save, then session persists, toast shows success, and I’m redirected to Sessions list with new row visible at top.
+
+Given made > attempted, when I blur the field, then the UI shows an in‑line error and disables Save.
+
+Edit Session
+
+Given an existing session, when I change zone values, then totals recompute in real‑time and Save updates Firestore; cancel restores previous values.
+
+Dashboard
+
+Given existing data, when I switch to 30‑day filter, then KPIs and charts reflect only sessions within that window within 150ms perceived.
+
+20) Next steps (implementation kit)
+
+Create repo scaffold (Vite + TS + Tailwind + shadcn)
+
+Set Firebase project; paste env; deploy Hello World
+
+Implement AuthGate + anonymous sign‑in
+
+Wire DAL for sessions; build Log Session flow end‑to‑end
+
+Build Sessions list + edit modal; CSV export
+
+Add Dashboard charts + heatmap
+
+Polish → Test → Ship

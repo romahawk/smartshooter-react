@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Sessions are private per user
+    match /sessions/{sessionId} {
+
+      // Auth helpers
+      function isSignedIn() {
+        return request.auth != null;
+      }
+
+      // When creating, userId must equal the caller
+      function isOwnerOnCreate() {
+        return isSignedIn() && request.resource.data.userId == request.auth.uid;
+      }
+
+      // For reads/updates, the stored doc must belong to the caller
+      function isDocOwner() {
+        return isSignedIn() && resource.data.userId == request.auth.uid;
+      }
+
+      // Minimal rounds validation (no higher-order methods in rules)
+      function hasRoundsList() {
+        return request.resource.data.rounds is list
+          && request.resource.data.rounds.size() > 0;
+      }
+
+      // Permissions
+      allow create: if isOwnerOnCreate() && hasRoundsList();
+      allow read:   if isDocOwner();
+      allow update: if isDocOwner()
+                     && request.resource.data.userId == request.auth.uid
+                     && hasRoundsList();
+      allow delete: if false; // tighten until you add a delete flow
+    }
+  }
+}
