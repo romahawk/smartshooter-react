@@ -14,6 +14,8 @@ import SessionList from "./components/SessionList";
 
 import type { Round, Session } from "./types/session";
 
+import "./App.css";
+
 type SessionDraft = {
   date: string;
   trainingType: string;

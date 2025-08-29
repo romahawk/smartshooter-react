@@ -40,3 +40,61 @@
 .read-the-docs {
   color: #888;
 }
+
+/* ===== SmartShooter Round Grid (pure CSS, no Tailwind needed) ===== */
+
+/* outer spacing between rounds */
+.ss-rounds-stack { display: grid; row-gap: 1.75rem; }
+
+/* 5 equal columns; stack to single column under 640px */
+.ss-grid5 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr; }
+@media (max-width: 639.98px) { .ss-grid5 { grid-template-columns: 1fr; } }
+
+/* consistent gap between cells/columns */
+.ss-gap { gap: 0.75rem; }
+
+/* extra bottom margin between the two input rows */
+.ss-row { margin-bottom: 0.5rem; }
+
+/* Titles like "Round 1" */
+.ss-roundTitle {
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #1d4ed8; /* blue-700-ish */
+}
+
+/* Zone headers */
+.ss-zoneTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151; /* gray-700 */
+  text-align: left;
+}
+
+/* pill-style inputs */
+.ss-field {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb; /* gray-200 */
+  background: #f9fafb;       /* gray-50 */
+  padding: 10px 14px;        /* ~py-2.5 px-3.5 */
+  font-size: 0.875rem;       /* text-sm */
+  box-shadow: inset 0 1px 0 rgba(0,0,0,0.02);
+  outline: none;
+  transition: box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.ss-field:focus {
+  box-shadow: 0 0 0 2px rgba(59,130,246,0.45); /* ring-blue-500 */
+  border-color: #3b82f6;
+  background: #fff;
+}
+
+/* center on small screens; left-align on >=640px */
+.ss-center-sm { text-align: center; }
+@media (min-width: 640px) { .ss-center-sm { text-align: left; } }
+
+/* hide number spinners */
+.ss-field::-webkit-outer-spin-button,
+.ss-field::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ss-field[type="number"] { -moz-appearance: textfield; appearance: textfield; }
