@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+
 import type { Round, Session } from "../types/session";
 import { getRounds, aggregateTotals } from "../selectors/rounds";
+
 import type { ZoneGroup, Direction } from "../zones/presets";
 import { orderedZones } from "../zones/presets";
+
 import ZoneGridRounds, { type AugRound } from "./ZoneGridRounds";
+
+/* ------------------------- Types ------------------------- */
 
 type SessionDraft = {
   date: string;
@@ -21,6 +26,8 @@ type Props = {
   initial?: Session | SessionDraft;
   title?: string;
 };
+
+/* ------------------------- Component ------------------------- */
 
 export default function EditSessionModal({
   open,
@@ -47,50 +54,55 @@ function ModalContent({
   initial?: Session | SessionDraft;
   title: string;
 }) {
+  /* ---------- top-level form state ---------- */
   const [date, setDate] = useState<string>(new Date().toISOString().slice(0, 10));
   const [trainingType, setTrainingType] = useState<string>("spot");
   const [zoneGroup, setZoneGroup] = useState<ZoneGroup>("3PT");
-  const [direction, setDirection] = useState<Direction>("ltr");
   const [notes, setNotes] = useState<string>("");
+
   const [roundsCount, setRoundsCount] = useState<number>(1);
+  const [directions, setDirections] = useState<Direction[]>(["ltr"]); // per-round
   const [rounds, setRounds] = useState<AugRound[]>([]); // internal grid with bucket
 
-  // Hydrate from initial
+  /* ---------- hydrate from initial ---------- */
   useEffect(() => {
     if (!initial) {
+      // brand-new
       setDate(new Date().toISOString().slice(0, 10));
       setTrainingType("spot");
       setZoneGroup("3PT");
-      setDirection("ltr");
       setNotes("");
       setRoundsCount(1);
+      setDirections(["ltr"]);
       setRounds(buildTemplate(1, "spot", "3PT", "ltr"));
       return;
     }
 
+    // editing existing
     const initRounds = "rounds" in initial ? getRounds(initial as Session) : [];
-    const zGroup = (("zoneGroup" in initial && (initial as any).zoneGroup) || "3PT") as ZoneGroup;
-    const tType = ("trainingType" in initial && (initial as any).trainingType) || "spot";
+    const zg = (("zoneGroup" in initial && (initial as any).zoneGroup) || "3PT") as ZoneGroup;
+    const tt = ("trainingType" in initial && (initial as any).trainingType) || "spot";
 
     setDate(("date" in initial && (initial as any).date) || new Date().toISOString().slice(0, 10));
-    setTrainingType(tType);
-    setZoneGroup(zGroup);
-    setDirection("ltr");
+    setTrainingType(tt);
+    setZoneGroup(zg);
     setNotes(("notes" in initial && (initial as any).notes) || "");
 
     const guessed = Math.max(1, Math.ceil((initRounds?.length || 0) / 5));
     setRoundsCount(guessed);
+    setDirections(Array.from({ length: guessed }, () => "ltr"));
 
-    const flatSorted = initRounds.map((r, i) => ({ ...r, idx: i }));
-    const zones = orderedZones(zGroup, "ltr");
-    const toBucketed = flatSorted.map<AugRound>((r, i) => ({
+    // bucketize but use ltr labels for membership
+    const zones = orderedZones(zg, "ltr");
+    const bucketed: AugRound[] = initRounds.map((r, i) => ({
       ...r,
+      idx: i,
       bucket: Math.floor(i / zones.length),
     }));
-    setRounds(ensureGrid(toBucketed, guessed, zones, tType));
+    setRounds(ensureGrid(bucketed, guessed, zones, tt));
   }, [initial]);
 
-  // ESC + scroll lock
+  /* ---------- overlay key/scroll handling ---------- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     document.addEventListener("keydown", onKey);
@@ -102,19 +114,45 @@ function ModalContent({
     };
   }, [onClose]);
 
-  // Keep grid shape when zoneGroup/direction/roundsCount changes
+  /* ---------- keep grid/directions in sync ---------- */
   useEffect(() => {
-    setRounds((prev) =>
-      ensureGrid(prev, roundsCount, orderedZones(zoneGroup, direction), trainingType)
-    );
-  }, [zoneGroup, direction, roundsCount, trainingType]);
+    // sync directions length with roundsCount
+    setDirections((prev) => {
+      const next = prev.slice(0, roundsCount);
+      while (next.length < roundsCount) next.push("ltr");
+      return next;
+    });
 
-  // Totals (flatten)
+    // keep grid membership the same size
+    setRounds((prev) =>
+      ensureGrid(prev, roundsCount, orderedZones(zoneGroup, "ltr"), trainingType)
+    );
+  }, [zoneGroup, roundsCount, trainingType]);
+
+  /* ---------- flatten honoring per-round direction ---------- */
+  const flatRounds = useMemo<Round[]>(() => {
+    const out: Round[] = [];
+    let idx = 0;
+    for (let bucket = 0; bucket < roundsCount; bucket++) {
+      const dir = directions[bucket] ?? "ltr";
+      const labels = orderedZones(zoneGroup, dir);
+      for (const z of labels) {
+        const r = rounds.find((x) => (x as any).bucket === bucket && x.zone === z);
+        if (!r) continue;
+        out.push({
+          idx: idx++,
+          zone: r.zone,
+          attempts: strongNum(r.attempts),
+          made: strongNum(r.made),
+          type: r.type,
+        });
+      }
+    }
+    return out;
+  }, [rounds, roundsCount, directions, zoneGroup]);
+
+  /* ---------- totals ---------- */
   const totals = useMemo(() => {
-    const flat: Round[] = rounds
-      .slice()
-      .sort(byBucketThenZone(orderedZones(zoneGroup, direction)))
-      .map((r, i) => ({ idx: i, zone: r.zone, attempts: r.attempts, made: r.made, type: r.type }));
     return aggregateTotals(
       getRounds({
         id: "preview",
@@ -122,78 +160,77 @@ function ModalContent({
         date,
         trainingType,
         notes,
-        rounds: flat,
+        rounds: flatRounds,
       } as Session)
     );
-  }, [rounds, zoneGroup, direction, date, trainingType, notes]);
+  }, [flatRounds, date, trainingType, notes]);
 
-  // Grid edit
+  /* ---------- grid edits (with autofill from first cell) ---------- */
   const handleGridChange = (roundNo: number, zone: string, patch: Partial<Round>) => {
+    const attemptsProvided =
+      typeof patch.attempts === "number" && !Number.isNaN(patch.attempts);
+
+    const dir = directions[roundNo] ?? "ltr";
+    const labels = orderedZones(zoneGroup, dir);
+    const firstZone = labels[0];
+
     setRounds((prev) =>
-      prev.map((r) =>
-        (r as any).bucket === roundNo && r.zone === zone
-          ? sanitizeSame({ ...r, ...patch })
-          : r
-      )
+      prev.map((r) => {
+        const sameRound = (r as any).bucket === roundNo;
+
+        // 1) Always apply the direct change
+        if (sameRound && r.zone === zone) {
+          return sanitizeStrong({ ...r, ...patch }) as AugRound;
+        }
+
+        // 2) If first zone's attempts changed, auto-fill other zones in that round
+        //    but only those that are still zero (don't clobber user edits)
+        if (
+          attemptsProvided &&
+          zone === firstZone &&
+          sameRound &&
+          labels.includes(r.zone) &&
+          strongNum(r.attempts) === 0
+        ) {
+          return sanitizeStrong({ ...r, attempts: patch.attempts }) as AugRound;
+        }
+
+        return r;
+      })
     );
   };
 
-  // Save
-  const handleSave = async () => {
-    const zones = orderedZones(zoneGroup, direction);
-    const flat: Round[] = rounds
-      .slice()
-      .sort(byBucketThenZone(zones))
-      .map((r, i) =>
-        sanitizeSame<Round>({
-          idx: i,
-          zone: r.zone,
-          attempts: r.attempts,
-          made: r.made,
-          type: r.type,
-        })
-      );
+  /* ---------- per-round direction change ---------- */
+  const handleDirectionChange = (roundNo: number, dir: Direction) => {
+    setDirections((prev) => {
+      const next = prev.slice();
+      next[roundNo] = dir;
+      return next;
+    });
+  };
 
-    if (flat.length === 0) return alert("Please add at least one round.");
-    for (const r of flat) {
+  /* ---------- save ---------- */
+  const handleSave = async () => {
+    if (flatRounds.length === 0) return alert("Please add at least one round.");
+    for (const r of flatRounds) {
       if (!r.zone || r.zone.trim() === "") return alert("Each round must have a zone name.");
       if (r.made > r.attempts) return alert("Made cannot exceed Attempted.");
     }
 
-    await onSave({ date, trainingType, zoneGroup, notes, rounds: flat });
+    await onSave({ date, trainingType, zoneGroup, notes, rounds: flatRounds });
     onClose();
   };
 
   /* ======================== RENDER ======================== */
   return (
-    <div
-      className="ss-modal fixed inset-0 z-[1000]"
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-    >
-      {/* Backdrop */}
+    <div className="ss-modal fixed inset-0 z-[1000]" role="dialog" aria-modal="true" onClick={onClose}>
       <div className="ss-backdrop fixed inset-0 bg-black/50" />
-
-      {/* Centering container */}
-      <div
-        className="fixed inset-0 flex items-start justify-center p-4 sm:p-6 overflow-y-auto"
-        onClick={onClose}
-      >
-        {/* Panel */}
-        <div
-          className="ss-panel relative w-full max-w-6xl rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
-          onClick={(e) => e.stopPropagation()}
-        >
+      <div className="fixed inset-0 flex items-start justify-center p-4 sm:p-6 overflow-y-auto" onClick={onClose}>
+        <div className="ss-panel relative w-full max-w-6xl rounded-2xl bg-white shadow-2xl ring-1 ring-black/5" onClick={(e) => e.stopPropagation()}>
           {/* Header */}
           <div className="sticky top-0 z-10 flex items-center gap-3 px-5 py-4 border-b bg-white/95 backdrop-blur">
             <h3 className="text-lg sm:text-xl font-semibold">{title}</h3>
-            <button
-              className="ml-auto h-8 w-8 grid place-items-center rounded-full border hover:bg-gray-50"
-              onClick={onClose}
-              aria-label="Close"
-              title="Close"
-            >
+            <button className="ml-auto h-8 w-8 grid place-items-center rounded-full border hover:bg-gray-50" onClick={onClose} aria-label="Close">
               ✕
             </button>
           </div>
@@ -201,7 +238,7 @@ function ModalContent({
           {/* Content */}
           <div className="px-5 py-5 space-y-6">
             {/* Form header controls */}
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
               <label className="flex flex-col gap-1">
                 <span className="text-sm font-medium">Date</span>
                 <input
@@ -250,37 +287,16 @@ function ModalContent({
                   <option value="PAINT">Paint</option>
                 </select>
               </label>
-
-              {/* Direction toggle */}
-              <div className="flex flex-col gap-1">
-                <span className="text-sm font-medium">Starting Zone</span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setDirection("ltr")}
-                    className={`ss-chip ${direction === "ltr" ? "ss-chip--active" : ""}`}
-                    title="Left → Right"
-                  >
-                    L → R
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDirection("rtl")}
-                    className={`ss-chip ${direction === "rtl" ? "ss-chip--active" : ""}`}
-                    title="Right → Left"
-                  >
-                    R ← L
-                  </button>
-                </div>
-              </div>
             </div>
 
-            {/* Multi-round zone grid */}
+            {/* Multi-round zone grid (now with per-round direction) */}
             <ZoneGridRounds
-              templateZones={orderedZones(zoneGroup, direction)}
+              zoneGroup={zoneGroup}
+              directions={directions}
               rounds={rounds}
               roundsCount={roundsCount}
               onChange={handleGridChange}
+              onDirectionChange={handleDirectionChange}
             />
 
             {/* Notes */}
@@ -318,29 +334,27 @@ function ModalContent({
   );
 }
 
-/* ---------- helpers (local) ---------- */
+/* ------------------------- Helpers ------------------------- */
 
-function byBucketThenZone(zones: string[]) {
-  const idx = new Map(zones.map((z, i) => [z, i]));
-  return (a: AugRound, b: AugRound) => {
-    const ba = (a as any).bucket ?? 0;
-    const bb = (b as any).bucket ?? 0;
-    if (ba !== bb) return ba - bb;
-    return (idx.get(a.zone) ?? 0) - (idx.get(b.zone) ?? 0);
-  };
+function strongNum(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
-/** Preserve the same structural type (works for AugRound or Round). */
-function sanitizeSame<T extends { attempts?: number; made?: number }>(r: T): T {
-  const attempts = Math.max(0, Number(r.attempts || 0));
-  const made = Math.max(0, Math.min(Number(r.made || 0), attempts));
-  return { ...r, attempts, made };
+/** Ensure attempts/made are numbers and clamped; keep the rest intact. */
+function sanitizeStrong<T extends { attempts?: number; made?: number }>(
+  r: T
+): Omit<T, "attempts" | "made"> & { attempts: number; made: number } {
+  const attempts = Math.max(0, Number(r.attempts ?? 0));
+  const made = Math.max(0, Math.min(Number(r.made ?? 0), attempts));
+  return { ...(r as any), attempts, made };
 }
 
+/** Keep an AugRound grid for the given roundsCount+zones membership. */
 function ensureGrid(
   prev: AugRound[],
   roundsCount: number,
-  zones: string[],
+  zones: string[], // membership only (order not important here)
   trainingType: string
 ): AugRound[] {
   let out: AugRound[] = prev
